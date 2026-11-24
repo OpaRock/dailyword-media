@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "incoming/**/*.b64"
-      - "incoming/**/*.b64.part*"
+      - "incoming/**/*.ready"
 
 permissions:
   contents: write
@@ -24,28 +24,28 @@ jobs:
           set -euo pipefail
           found=0
 
-          # Concatenate split base64 parts (*.b64.part00, .part01, ...)
-          mapfile -d '' parts < <(find incoming -type f -name '*.b64.part[0-9][0-9]' -print0 2>/dev/null || true)
-          if [ "${#parts[@]}" -gt 0 ] && [ -n "${parts[0]}" ]; then
-            python3 - <<'PY'
-import os, glob
-from collections import defaultdict
-groups=defaultdict(list)
-for p in glob.glob("incoming/**/*.b64.part[0-9][0-9]", recursive=True):
-    base=p.rsplit(".part",1)[0]
-    groups[base].append(p)
-for base, files in groups.items():
-    files=sorted(files)
-    print("assemble", base, "from", files)
-    with open(base, "wb") as out:
-        for f in files:
-            out.write(open(f,"rb").read())
-    for f in files:
+          # A .ready file means every split part for that media file is in the repo.
+          # Example: incoming/reels/DailyWORD_Nov24_Ephesians5-19-20.mp4.ready
+          #          incoming/reels/DailyWORD_Nov24_Ephesians5-19-20.mp4.b64.part00 ...
+          python3 - <<'PY'
+import os, glob, sys
+ready_files = glob.glob("incoming/**/*.ready", recursive=True)
+for ready in ready_files:
+    stem = ready[:-6]  # strip .ready
+    parts = sorted(glob.glob(stem + ".b64.part[0-9][0-9]"))
+    if not parts:
+        print("no parts for", ready, file=sys.stderr)
+        sys.exit(1)
+    assembled = stem + ".b64"
+    print("assemble", assembled, "from", parts)
+    with open(assembled, "wb") as out:
+        for f in parts:
+            out.write(open(f, "rb").read())
+    for f in parts:
         os.remove(f)
-    print("wrote", base, os.path.getsize(base))
+    os.remove(ready)
+    print("wrote", assembled, os.path.getsize(assembled))
 PY
-            found=1
-          fi
 
           mapfile -d '' files < <(find incoming -type f -name '*.b64' -print0 2>/dev/null || true)
           for f in "${files[@]}"; do
@@ -58,8 +58,14 @@ PY
             found=1
             echo "decoded $f -> $out ($(wc -c < "$out") bytes)"
           done
-          if [ "$found" -eq 0 ]; then
-            echo "No incoming base64 files found."
+
+          # found may already be 1 from assembled files now decoded
+          if [ "$found" -eq 0 ] && [ ! -e incoming ]; then
+            echo "No incoming media found."
+            exit 0
+          fi
+          if ! git status --porcelain | grep -q .; then
+            echo "No changes to commit."
             exit 0
           fi
           find incoming -type d -empty -delete 2>/dev/null || true
