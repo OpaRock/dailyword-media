@@ -1,0 +1,45 @@
+name: Decode incoming media
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "incoming/**/*.b64"
+
+permissions:
+  contents: write
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decode base64 media and commit binaries
+        run: |
+          set -euo pipefail
+          found=0
+          mapfile -d '' files < <(find incoming -type f -name '*.b64' -print0 2>/dev/null || true)
+          for f in "${files[@]}"; do
+            [ -n "$f" ] || continue
+            rel="${f#incoming/}"
+            out="${rel%.b64}"
+            mkdir -p "$(dirname "$out")"
+            base64 -d "$f" > "$out"
+            rm -f "$f"
+            found=1
+            echo "decoded $f -> $out ($(wc -c < "$out") bytes)"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No incoming base64 files found."
+            exit 0
+          fi
+          find incoming -type d -empty -delete 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add decoded DailyWORD media"
+          git push
