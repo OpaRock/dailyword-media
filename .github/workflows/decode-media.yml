@@ -19,34 +19,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Assemble parts, decode media, and commit binaries
+      - name: Assemble split parts
+        run: python3 .github/scripts/assemble-incoming.py
+
+      - name: Decode base64 media and commit binaries
         run: |
           set -euo pipefail
           found=0
-
-          # A .ready file means every split part for that media file is in the repo.
-          # Example: incoming/reels/DailyWORD_Nov24_Ephesians5-19-20.mp4.ready
-          #          incoming/reels/DailyWORD_Nov24_Ephesians5-19-20.mp4.b64.part00 ...
-          python3 - <<'PY'
-import os, glob, sys
-ready_files = glob.glob("incoming/**/*.ready", recursive=True)
-for ready in ready_files:
-    stem = ready[:-6]  # strip .ready
-    parts = sorted(glob.glob(stem + ".b64.part[0-9][0-9]"))
-    if not parts:
-        print("no parts for", ready, file=sys.stderr)
-        sys.exit(1)
-    assembled = stem + ".b64"
-    print("assemble", assembled, "from", parts)
-    with open(assembled, "wb") as out:
-        for f in parts:
-            out.write(open(f, "rb").read())
-    for f in parts:
-        os.remove(f)
-    os.remove(ready)
-    print("wrote", assembled, os.path.getsize(assembled))
-PY
-
           mapfile -d '' files < <(find incoming -type f -name '*.b64' -print0 2>/dev/null || true)
           for f in "${files[@]}"; do
             [ -n "$f" ] || continue
@@ -58,19 +37,14 @@ PY
             found=1
             echo "decoded $f -> $out ($(wc -c < "$out") bytes)"
           done
-
-          # found may already be 1 from assembled files now decoded
-          if [ "$found" -eq 0 ] && [ ! -e incoming ]; then
-            echo "No incoming media found."
-            exit 0
-          fi
-          if ! git status --porcelain | grep -q .; then
-            echo "No changes to commit."
+          if [ "$found" -eq 0 ]; then
+            echo "No incoming base64 files found."
             exit 0
           fi
           find incoming -type d -empty -delete 2>/dev/null || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git status
           git commit -m "Add decoded DailyWORD media"
           git push
