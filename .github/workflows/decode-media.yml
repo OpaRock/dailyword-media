@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "incoming/**/*.b64"
+      - "incoming/**/*.b64.part*"
 
 permissions:
   contents: write
@@ -18,10 +19,34 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Decode base64 media and commit binaries
+      - name: Assemble parts, decode media, and commit binaries
         run: |
           set -euo pipefail
           found=0
+
+          # Concatenate split base64 parts (*.b64.part00, .part01, ...)
+          mapfile -d '' parts < <(find incoming -type f -name '*.b64.part[0-9][0-9]' -print0 2>/dev/null || true)
+          if [ "${#parts[@]}" -gt 0 ] && [ -n "${parts[0]}" ]; then
+            python3 - <<'PY'
+import os, glob
+from collections import defaultdict
+groups=defaultdict(list)
+for p in glob.glob("incoming/**/*.b64.part[0-9][0-9]", recursive=True):
+    base=p.rsplit(".part",1)[0]
+    groups[base].append(p)
+for base, files in groups.items():
+    files=sorted(files)
+    print("assemble", base, "from", files)
+    with open(base, "wb") as out:
+        for f in files:
+            out.write(open(f,"rb").read())
+    for f in files:
+        os.remove(f)
+    print("wrote", base, os.path.getsize(base))
+PY
+            found=1
+          fi
+
           mapfile -d '' files < <(find incoming -type f -name '*.b64' -print0 2>/dev/null || true)
           for f in "${files[@]}"; do
             [ -n "$f" ] || continue
